@@ -1,0 +1,4 @@
+interface:
+  display_name: "Google SEO 审计"
+  short_description: "审计网站抓取、索引信号、内容与渲染"
+  default_prompt: "使用 $google-seo-audit 审计这个网站或本地 Web 项目的 Google SEO 技术问题。"
