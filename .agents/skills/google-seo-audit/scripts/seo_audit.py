@@ -18,6 +18,7 @@ from html.parser import HTMLParser
 from pathlib import Path
 
 USER_AGENT = "Mozilla/5.0 (compatible; CodexSEOAudit/1.0)"
+DEFAULT_URL_LIMIT = 1000
 
 
 class PageParser(HTMLParser):
@@ -254,7 +255,12 @@ def main() -> int:
     run.add_argument("urls", nargs="+", help="Seed URL(s)")
     run.add_argument("--sitemap", action="store_true")
     run.add_argument("--render", action="store_true")
-    run.add_argument("--limit", type=int, default=100)
+    run.add_argument(
+        "--limit",
+        type=int,
+        default=DEFAULT_URL_LIMIT,
+        help=f"Maximum URLs to audit when using a sitemap (default: {DEFAULT_URL_LIMIT})",
+    )
     run.add_argument("--timeout", type=float, default=20)
     run.add_argument("--output", required=True)
     run.set_defaults(func=audit)

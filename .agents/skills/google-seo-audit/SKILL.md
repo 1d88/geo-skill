@@ -23,7 +23,7 @@ description: 为公开网站或本地 Web 项目建立可计划、可执行、�
 python3 scripts/seo_audit.py audit https://example.com --sitemap --render --output audit-baseline.json
 ```
 
-`--render` 会在环境已安装 Playwright 时采集渲染后 HTML；若不可用，工具会记录限制并继续完成原始 HTML 审计。大站先用 `--limit` 控制样本，再按页面模板和业务价值补充 URL。
+`--render` 会在环境已安装 Playwright 时采集渲染后 HTML；若不可用，工具会记录限制并继续完成原始 HTML 审计。sitemap 模式默认最多审计 1000 个 URL，可用 `--limit` 调高或调低；大型站点仍应优先按页面模板和业务价值分批采集，避免一次任务运行过久。
 
 本地项目应先识别框架、路由和可用的预览命令。经用户授权启动本地预览后，对本地 URL 使用同一采集器。也要检查代码中生成 metadata、canonical、robots 和 sitemap 的实现位置。
 
