@@ -50,11 +50,22 @@ child.stdout.on("data", chunk => {
 
 For a production web service, run audits as background jobs, validate submitted URLs, limit concurrency, apply per-request timeouts (not an arbitrary overall audit deadline), and store results outside process memory.
 
+## Repeatable task contract
+
+The versioned skill owns the audit method and evidence rules. A host can pass a task JSON file instead of repeating SEO instructions in every prompt. See [.agents/skills/google-seo-audit/references/task-replay.md](.agents/skills/google-seo-audit/references/task-replay.md) for inputs and saved artifacts.
+
+- `audit`: collect a new baseline and assess available read-only GSC evidence.
+- `replay`: reassess saved evidence without fetching live data; record any skill-version change.
+- `retest`: recollect with comparable scope and compare against the baseline.
+
+Reports distinguish verified facts, supported but inconclusive claims, and unknowns. Technical fixes, Google's indexed records, and search performance changes are assessed separately. Each conclusion references evidence and its time/scope. These are skill execution instructions, not an implemented web scheduler or a guarantee of identical model output.
+
 ## Contents
 
 - `SKILL.md`: orchestration workflow and evidence boundaries
 - `scripts/seo_audit.py`: optional zero-dependency baseline and comparison helper
-- `references/reporting.md`: report structure and prioritization rules
+- `references/reporting.md`: conclusion levels, evidence references and prioritization rules
+- `references/task-replay.md`: task inputs, replay modes and persistent artifacts
 - `agents/openai.yaml`: user-facing skill metadata
 
 
