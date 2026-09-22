@@ -48,7 +48,7 @@ child.stdout.on("data", chunk => {
 });
 ```
 
-For a production web service, run audits as background jobs, validate submitted URLs, limit concurrency, apply timeouts, and store results outside process memory.
+For a production web service, run audits as background jobs, validate submitted URLs, limit concurrency, apply per-request timeouts (not an arbitrary overall audit deadline), and store results outside process memory.
 
 ## Contents
 
@@ -57,3 +57,11 @@ For a production web service, run audits as background jobs, validate submitted 
 - `references/reporting.md`: report structure and prioritization rules
 - `agents/openai.yaml`: user-facing skill metadata
 
+
+## Read-only Google Search Console evidence
+
+The skill now includes `scripts/gsc_collect.py` and `references/search-console.md` for the official Search Console API. An external collector obtains only explicitly selected datasets using `webmasters.readonly`; Codex receives a checksummed evidence snapshot, not Google credentials. Supported reads cover site/page performance, exact-page queries, URL Inspection, and sitemaps. No GSC write operations are implemented.
+
+See [.agents/skills/google-seo-audit/references/search-console.md](.agents/skills/google-seo-audit/references/search-console.md) for service-account and OAuth-token setup, commands, output contracts, and evidence boundaries. Account authorization and credential isolation are performed by the host application; this repository does not implement a web OAuth login screen.
+
+Run offline validation with `python3 -m unittest discover -s tests -v`.

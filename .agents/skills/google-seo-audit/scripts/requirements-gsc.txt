@@ -1,0 +1,3 @@
+# Optional: only needed by the external collector for service-account credentials.
+google-auth>=2.29,<3
+requests>=2.31,<3

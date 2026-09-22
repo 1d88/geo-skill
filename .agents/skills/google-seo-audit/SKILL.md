@@ -1,6 +1,6 @@
 ---
 name: google-seo-audit
-description: 为公开网站或本地 Web 项目建立可计划、可执行、可复测的 Google SEO 技术审计；覆盖抓取、索引信号、内容和 JavaScript 渲染，并生成基线、修复计划与前后对比证据。
+description: 为公开网站或本地 Web 项目建立可计划、可执行、可复测的 Google SEO 技术审计；覆盖抓取、索引信号、内容和 JavaScript 渲染，并生成基线、修复计划与前后对比证据；可结合 Google Search Console 的只读数据验证索引与搜索表现。
 ---
 
 # Google SEO 审计工具
@@ -53,6 +53,12 @@ python3 scripts/seo_audit.py compare audit-baseline.json audit-after.json --outp
 ```
 
 逐项判定为 `fixed`、`remaining`、`new` 或 `not_tested`。只有证据满足预先写明的成功条件，才标记已修复；范围、环境或采集方式不同造成的差异要单独说明。
+
+### 4. 使用 Search Console 只读证据
+
+用户提供 GSC 属性/日期范围或数据快照时，读取 [Search Console 接入规范](references/search-console.md)。由宿主独立采集进程使用官方 `webmasters.readonly` 权限及 `scripts/gsc_collect.py` 拉取指定数据，再把快照交给 Codex；Codex 不接收 Google 凭据，不操作 GSC 页面或写接口。
+
+先确认属性、时间范围、所需数据集和 URL 清单，不擅自扩大采集范围。读取快照前校验来源、采集状态及文件哈希；将网站现场证据、Google 索引记录和搜索表现分开判断。GSC 抓取记录早于修复时，标记等待重抓验证；未提供或采集失败的数据标记未验证，不视为零流量或未收录。
 
 ## 必查证据
 
