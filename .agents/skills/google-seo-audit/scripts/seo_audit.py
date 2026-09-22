@@ -18,7 +18,18 @@ from html.parser import HTMLParser
 from pathlib import Path
 
 USER_AGENT = "Mozilla/5.0 (compatible; CodexSEOAudit/1.0)"
+RENDER_USER_AGENT = (
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+    "AppleWebKit/537.36 (KHTML, like Gecko) "
+    "Chrome/140.0.0.0 Safari/537.36"
+)
 DEFAULT_URL_LIMIT = 1000
+SKIP_EXTENSIONS = {
+    ".7z", ".avi", ".css", ".csv", ".doc", ".docx", ".eot", ".gif", ".gz",
+    ".ico", ".jpeg", ".jpg", ".js", ".json", ".map", ".mov", ".mp3", ".mp4",
+    ".pdf", ".png", ".ppt", ".pptx", ".rar", ".rss", ".svg", ".tar", ".tgz",
+    ".txt", ".wav", ".webp", ".woff", ".woff2", ".xls", ".xlsx", ".xml", ".zip",
+}
 
 
 class PageParser(HTMLParser):
@@ -120,6 +131,62 @@ def parse_html(html: str, base_url: str) -> dict:
     }
 
 
+def normalize_crawl_url(url: str, allowed_host: str, include_query: bool) -> str | None:
+    parts = urllib.parse.urlsplit(url)
+    if parts.scheme not in {"http", "https"} or parts.netloc.lower() != allowed_host:
+        return None
+    path = parts.path or "/"
+    suffix = Path(path.lower()).suffix
+    if suffix in SKIP_EXTENSIONS:
+        return None
+    query = parts.query if include_query else ""
+    return urllib.parse.urlunsplit((parts.scheme.lower(), parts.netloc.lower(), path, query, ""))
+
+
+def discover_links(
+    seed_urls: list[str], timeout: float, limit: int, max_depth: int, include_query: bool,
+) -> tuple[list[str], dict[str, dict], list[str], dict]:
+    allowed_host = urllib.parse.urlsplit(seed_urls[0]).netloc.lower()
+    queue: list[tuple[str, int]] = []
+    for seed in seed_urls:
+        normalized = normalize_crawl_url(seed, allowed_host, include_query)
+        if normalized:
+            queue.append((normalized, 0))
+    discovered: list[str] = []
+    seen: set[str] = set()
+    cache: dict[str, dict] = {}
+    errors: list[str] = []
+    max_depth_reached = 0
+    excluded_links = 0
+    while queue and len(discovered) < limit:
+        url, depth = queue.pop(0)
+        if url in seen:
+            continue
+        seen.add(url)
+        discovered.append(url)
+        max_depth_reached = max(max_depth_reached, depth)
+        response = fetch(url, timeout)
+        cache[url] = response
+        if response["status"] != 200:
+            errors.append(f"{url}: {response['status'] or response['error']}")
+            continue
+        if depth >= max_depth or "html" not in response.get("content_type", "").lower():
+            continue
+        base = response["final_url"] or url
+        parsed = parse_html(response["html"], base)
+        for link in parsed["internal_links"]:
+            normalized = normalize_crawl_url(link, allowed_host, include_query)
+            if normalized and normalized not in seen:
+                queue.append((normalized, depth + 1))
+            elif normalized is None:
+                excluded_links += 1
+    stats = {
+        "discovered": len(discovered), "max_depth_reached": max_depth_reached,
+        "excluded_links": excluded_links, "queue_remaining_at_limit": len(queue),
+    }
+    return discovered, cache, errors, stats
+
+
 def discover_sitemap(root_url: str, timeout: float, limit: int) -> tuple[list[str], list[str]]:
     queue = [urllib.parse.urljoin(root_url.rstrip("/") + "/", "sitemap.xml")]
     found: list[str] = []
@@ -146,26 +213,54 @@ def discover_sitemap(root_url: str, timeout: float, limit: int) -> tuple[list[st
     return found, errors
 
 
-async def render_pages(urls: list[str], timeout: float) -> tuple[dict[str, str], str | None]:
+async def render_pages(
+    urls: list[str], timeout: float, retries: int, concurrency: int, wait_ms: int,
+) -> tuple[dict[str, dict], dict[str, str], str | None]:
     try:
         from playwright.async_api import async_playwright
     except ImportError:
-        return {}, "Playwright is not installed; rendered HTML was not collected."
-    rendered: dict[str, str] = {}
+        return {}, {}, "Playwright is not installed; rendered HTML was not collected."
+    rendered: dict[str, dict] = {}
+    errors: dict[str, str] = {}
     try:
         async with async_playwright() as playwright:
             browser = await playwright.chromium.launch(headless=True)
-            page = await browser.new_page(user_agent=USER_AGENT)
-            for url in urls:
-                try:
-                    await page.goto(url, wait_until="networkidle", timeout=int(timeout * 1000))
-                    rendered[url] = await page.content()
-                except Exception:
-                    continue
+            context = await browser.new_context(user_agent=RENDER_USER_AGENT)
+            semaphore = asyncio.Semaphore(max(1, concurrency))
+
+            async def render_one(url: str) -> None:
+                last_error = "unknown rendering failure"
+                async with semaphore:
+                    for attempt in range(retries + 1):
+                        page = await context.new_page()
+                        try:
+                            response = await page.goto(
+                                url, wait_until="domcontentloaded", timeout=int(timeout * 1000)
+                            )
+                            if wait_ms:
+                                await page.wait_for_timeout(wait_ms)
+                            html = await page.content()
+                            if not html.strip():
+                                raise RuntimeError("rendered DOM is empty")
+                            rendered[url] = {
+                                "html": html,
+                                "final_url": page.url,
+                                "status": response.status if response else None,
+                                "attempts": attempt + 1,
+                            }
+                            return
+                        except Exception as exc:
+                            last_error = f"{type(exc).__name__}: {exc}"
+                        finally:
+                            await page.close()
+                    errors[url] = last_error
+
+            await asyncio.gather(*(render_one(url) for url in urls))
+            await context.close()
             await browser.close()
     except Exception as exc:
-        return rendered, f"Rendering failed: {type(exc).__name__}: {exc}"
-    return rendered, None
+        return rendered, errors, f"Rendering failed: {type(exc).__name__}: {exc}"
+    return rendered, errors, None
 
 
 def make_findings(page: dict) -> list[dict]:
@@ -194,29 +289,75 @@ def make_findings(page: dict) -> list[dict]:
 def audit(args) -> int:
     urls = list(dict.fromkeys(args.urls))
     sitemap_errors: list[str] = []
+    sitemap_discovered = 0
     if args.sitemap:
         discovered, sitemap_errors = discover_sitemap(urls[0], args.timeout, args.limit)
+        sitemap_discovered = len(discovered)
         urls = list(dict.fromkeys(urls + discovered))[:args.limit]
-    responses = [fetch(url, args.timeout) for url in urls]
-    render_map, render_error = ({}, None)
+    crawl_errors: list[str] = []
+    response_cache: dict[str, dict] = {}
+    crawl_stats = None
+    crawl_added = 0
+    if args.crawl:
+        before_crawl = set(urls)
+        crawled, response_cache, crawl_errors, crawl_stats = discover_links(
+            urls, args.timeout, args.limit, args.max_depth, args.include_query
+        )
+        crawl_added = len(set(crawled) - before_crawl)
+        urls = list(dict.fromkeys(urls + crawled))[:args.limit]
+    responses = [response_cache.get(url) or fetch(url, args.timeout) for url in urls]
+    render_map, render_errors, render_error = ({}, {}, None)
     if args.render:
-        render_map, render_error = asyncio.run(render_pages(urls, args.timeout))
+        render_map, render_errors, render_error = asyncio.run(render_pages(
+            urls, args.timeout, args.render_retries, args.render_concurrency, args.render_wait_ms
+        ))
     pages = []
     for response in responses:
         html = response.pop("html")
         base = response["final_url"] or response["requested_url"]
         page = {**response, "raw": parse_html(html, base)}
-        if response["requested_url"] in render_map:
-            page["rendered"] = parse_html(render_map[response["requested_url"]], base)
+        rendered = render_map.get(response["requested_url"])
+        if rendered:
+            page["rendered"] = parse_html(rendered["html"], rendered["final_url"] or base)
+            page["render_status"] = rendered["status"]
+            page["render_final_url"] = rendered["final_url"]
+            page["render_attempts"] = rendered["attempts"]
+        elif response["requested_url"] in render_errors:
+            page["render_error"] = render_errors[response["requested_url"]]
+        elif args.render and render_error:
+            page["render_error"] = render_error
         page["findings"] = make_findings(page)
         pages.append(page)
     robots = fetch(urllib.parse.urljoin(args.urls[0].rstrip("/") + "/", "robots.txt"), args.timeout)
     robots.pop("html", None)
+    limitations = ([render_error] if render_error else []) + sitemap_errors + crawl_errors
+    if args.render and render_errors:
+        limitations.append(
+            f"Browser rendering failed for {len(render_errors)}/{len(urls)} URLs; "
+            "see per-page render_error values."
+        )
     snapshot = {
         "schema_version": 1,
         "created_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
-        "scope": {"seed_urls": args.urls, "used_sitemap": args.sitemap, "limit": args.limit},
-        "limitations": ([render_error] if render_error else []) + sitemap_errors,
+        "scope": {
+            "seed_urls": args.urls, "used_sitemap": args.sitemap, "recursive_crawl": args.crawl,
+            "sitemap_discovered": sitemap_discovered,
+            "crawl_discovered": crawl_stats["discovered"] if crawl_stats else 0,
+            "crawl_added": crawl_added,
+            "total_urls": len(urls),
+            "max_depth": args.max_depth if args.crawl else None,
+            "max_depth_reached": crawl_stats["max_depth_reached"] if crawl_stats else None,
+            "excluded_links": crawl_stats["excluded_links"] if crawl_stats else 0,
+            "queue_remaining_at_limit": crawl_stats["queue_remaining_at_limit"] if crawl_stats else 0,
+            "include_query": args.include_query if args.crawl else None, "limit": args.limit,
+        },
+        "rendering": {
+            "requested": len(urls) if args.render else 0,
+            "succeeded": len(render_map),
+            "failed": len(render_errors) if render_errors else (len(urls) if render_error else 0),
+            "retries": args.render_retries if args.render else 0,
+        },
+        "limitations": limitations,
         "robots_txt": robots,
         "pages": pages,
     }
@@ -254,7 +395,13 @@ def main() -> int:
     run = commands.add_parser("audit", help="Create an SEO evidence snapshot")
     run.add_argument("urls", nargs="+", help="Seed URL(s)")
     run.add_argument("--sitemap", action="store_true")
+    run.add_argument("--crawl", action="store_true", help="Recursively discover same-host HTML links")
+    run.add_argument("--max-depth", type=int, default=5, help="Maximum recursive link depth (default: 5)")
+    run.add_argument("--include-query", action="store_true", help="Treat query-string URLs as distinct crawl targets")
     run.add_argument("--render", action="store_true")
+    run.add_argument("--render-retries", type=int, default=2)
+    run.add_argument("--render-concurrency", type=int, default=4)
+    run.add_argument("--render-wait-ms", type=int, default=1000)
     run.add_argument(
         "--limit",
         type=int,
